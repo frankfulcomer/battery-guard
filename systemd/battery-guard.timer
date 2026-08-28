@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Battery Guard periodically
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=battery-guard.service
+
+[Install]
+WantedBy=timers.target
