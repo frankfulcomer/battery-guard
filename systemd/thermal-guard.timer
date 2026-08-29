@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Thermal Guard periodically
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+Unit=thermal-guard.service
+
+[Install]
+WantedBy=timers.target

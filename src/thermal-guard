@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+
+# Perform one thermal safety check. A systemd timer runs this script repeatedly.
+set -u
+
+CONFIG="./config/thermal-guard.conf"
+THERMAL_ROOT="${THERMAL_GUARD_SYSFS_ROOT:-/sys/class/thermal}"
+POWEROFF_CMD="${THERMAL_GUARD_POWEROFF_CMD:-/usr/bin/systemctl}"
+WARNING_STATE_FILE="${THERMAL_GUARD_WARNING_STATE_FILE:-/run/thermal-guard-warning-sent}"
+
+fail() {
+    echo "ERROR: $*"
+    exit 1
+}
+
+notify_user() {
+    local urgency=$1 title=$2 message=$3
+    if [[ -n "${THERMAL_GUARD_WARNING_CMD:-}" ]]; then
+        "$THERMAL_GUARD_WARNING_CMD" "$urgency" "$MAX_TEMP_C" "$title"
+        return
+    fi
+
+    local uid runtime_dir session_bus delivered=false
+    uid=$(/usr/bin/id -u "$WARNING_USER") || return 1
+    runtime_dir="/run/user/$uid"
+    session_bus="unix:path=$runtime_dir/bus"
+    if /usr/sbin/runuser -u "$WARNING_USER" -- env \
+        XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$session_bus" \
+        /usr/bin/notify-send --urgency="$urgency" --app-name="Thermal Guard" \
+        "$title" "$message"; then
+        delivered=true
+    else
+        echo "WARNING: Unable to display the thermal notification."
+    fi
+    if /usr/sbin/runuser -u "$WARNING_USER" -- env \
+        XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$session_bus" \
+        /usr/bin/canberra-gtk-play --id=dialog-warning --description="$title"; then
+        delivered=true
+    else
+        echo "WARNING: Unable to play the thermal alert."
+    fi
+    [[ "$delivered" == true ]]
+}
+
+power_off() {
+    if [[ -n "${THERMAL_GUARD_POWEROFF_CMD:-}" ]]; then
+        "$POWEROFF_CMD"
+    else
+        "$POWEROFF_CMD" poweroff
+    fi
+}
+
+[[ -r "$CONFIG" ]] || fail "Cannot read $CONFIG."
+source "$CONFIG"
+
+for setting in WARNING_TEMP_C CRITICAL_TEMP_C; do
+    [[ "${!setting:-}" =~ ^[0-9]+$ ]] || fail "$setting must be a whole number."
+    (( ${!setting} >= 1 && ${!setting} <= 150 )) || fail "$setting must be between 1 and 150."
+done
+(( CRITICAL_TEMP_C > WARNING_TEMP_C )) || fail "CRITICAL_TEMP_C must be greater than WARNING_TEMP_C."
+[[ "${DRY_RUN:-}" == true || "${DRY_RUN:-}" == false ]] || fail "DRY_RUN must be either true or false."
+[[ -n "${WARNING_USER:-}" ]] || fail "WARNING_USER must name the desktop user to notify."
+
+MAX_TEMP_MC=-1
+MAX_ZONE=""
+shopt -s nullglob
+for temp_file in "$THERMAL_ROOT"/thermal_zone*/temp; do
+    raw_temp=$(<"$temp_file")
+    [[ "$raw_temp" =~ ^[0-9]+$ ]] || continue
+    if (( raw_temp > MAX_TEMP_MC )); then
+        MAX_TEMP_MC=$raw_temp
+        zone_dir=${temp_file%/temp}
+        if [[ -r "$zone_dir/type" ]]; then
+            MAX_ZONE=$(<"$zone_dir/type")
+        else
+            MAX_ZONE=${zone_dir##*/}
+        fi
+    fi
+done
+(( MAX_TEMP_MC >= 0 )) || fail "No valid thermal-zone readings were found in $THERMAL_ROOT."
+
+# Compare millidegrees so a reading such as 84.9 C is not rounded up.
+MAX_TEMP_C=$((MAX_TEMP_MC / 1000))
+printf 'Hottest zone: %s\nTemperature: %d.%03d C\n' "$MAX_ZONE" \
+    "$MAX_TEMP_C" "$((MAX_TEMP_MC % 1000))"
+
+previous_level=""
+[[ -r "$WARNING_STATE_FILE" ]] && previous_level=$(<"$WARNING_STATE_FILE")
+if (( MAX_TEMP_MC >= CRITICAL_TEMP_C * 1000 )); then
+    echo "Critical thermal condition met."
+    if [[ "$previous_level" != critical ]]; then
+        if notify_user critical "Critical temperature" \
+            "$MAX_ZONE is at $MAX_TEMP_C C. The system will power off for safety."; then
+            printf 'critical\n' > "$WARNING_STATE_FILE"
+        else
+            echo "WARNING: Thermal alert delivery failed; Thermal Guard will retry."
+        fi
+    else
+        echo "Critical thermal alert was already sent."
+    fi
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "DRY RUN: thermal shutdown suppressed."
+    else
+        power_off
+    fi
+elif (( MAX_TEMP_MC >= WARNING_TEMP_C * 1000 )); then
+    if [[ "$previous_level" != warning ]]; then
+        echo "Thermal warning condition met."
+        if notify_user critical "High temperature warning" \
+            "$MAX_ZONE is at $MAX_TEMP_C C (critical at $CRITICAL_TEMP_C C)."; then
+            printf 'warning\n' > "$WARNING_STATE_FILE"
+        else
+            echo "WARNING: Alert delivery failed; Thermal Guard will retry."
+        fi
+    else
+        echo "Thermal warning was already sent."
+    fi
+else
+    rm -f "$WARNING_STATE_FILE"
+    echo "Thermal condition is safe."
+fi

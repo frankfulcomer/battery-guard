@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+
+# Perform one filesystem-capacity check. This guard only alerts; it never deletes data.
+set -u
+
+CONFIG="./config/storage-guard.conf"
+DF_CMD="${STORAGE_GUARD_DF_CMD:-/usr/bin/df}"
+STATE_FILE="${STORAGE_GUARD_STATE_FILE:-/run/storage-guard-alert-level}"
+HEALTH_STATE_FILE="${STORAGE_GUARD_HEALTH_STATE_FILE:-/run/storage-guard-health-alert-level}"
+FINDMNT_CMD="${STORAGE_GUARD_FINDMNT_CMD:-/usr/bin/findmnt}"
+LSBLK_CMD="${STORAGE_GUARD_LSBLK_CMD:-/usr/bin/lsblk}"
+SMARTCTL_CMD="${STORAGE_GUARD_SMARTCTL_CMD:-/usr/sbin/smartctl}"
+
+fail() {
+    echo "ERROR: $*"
+    exit 1
+}
+
+notify_user() {
+    local urgency=$1 level=$2
+    if [[ -n "${STORAGE_GUARD_WARNING_CMD:-}" ]]; then
+        "$STORAGE_GUARD_WARNING_CMD" "$level" "$USAGE_PERCENT" "$AVAILABLE_KB" "$MOUNT_POINT"
+        return
+    fi
+
+    local uid runtime_dir session_bus
+    uid=$(/usr/bin/id -u "$WARNING_USER") || return 1
+    runtime_dir="/run/user/$uid"
+    session_bus="unix:path=$runtime_dir/bus"
+    /usr/sbin/runuser -u "$WARNING_USER" -- env \
+        XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$session_bus" \
+        /usr/bin/notify-send --urgency="$urgency" --app-name="Storage Guard" \
+        "$level storage usage" \
+        "$MOUNT_POINT is $USAGE_PERCENT% full with ${AVAILABLE_KB} KiB available."
+}
+
+notify_health() {
+    local urgency=$1 level=$2 reason=$3
+    if [[ -n "${STORAGE_GUARD_WARNING_CMD:-}" ]]; then
+        "$STORAGE_GUARD_WARNING_CMD" health "$level" "$HEALTH_DEVICE_RESOLVED" "$reason"
+        return
+    fi
+
+    local uid runtime_dir session_bus
+    uid=$(/usr/bin/id -u "$WARNING_USER") || return 1
+    runtime_dir="/run/user/$uid"
+    session_bus="unix:path=$runtime_dir/bus"
+    /usr/sbin/runuser -u "$WARNING_USER" -- env \
+        XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$session_bus" \
+        /usr/bin/notify-send --urgency="$urgency" --app-name="Storage Guard" \
+        "$level storage-device health" "$HEALTH_DEVICE_RESOLVED: $reason"
+}
+
+[[ -r "$CONFIG" ]] || fail "Cannot read $CONFIG."
+source "$CONFIG"
+
+[[ -n "${MOUNT_POINT:-}" ]] || fail "MOUNT_POINT must not be empty."
+for setting in WARNING_USAGE_PERCENT CRITICAL_USAGE_PERCENT; do
+    [[ "${!setting:-}" =~ ^[0-9]+$ ]] || fail "$setting must be a whole number."
+    (( ${!setting} >= 1 && ${!setting} <= 100 )) || fail "$setting must be between 1 and 100."
+done
+(( CRITICAL_USAGE_PERCENT > WARNING_USAGE_PERCENT )) || \
+    fail "CRITICAL_USAGE_PERCENT must be greater than WARNING_USAGE_PERCENT."
+[[ -n "${WARNING_USER:-}" ]] || fail "WARNING_USER must name the desktop user to notify."
+[[ "${HEALTH_MONITORING:-}" == true || "${HEALTH_MONITORING:-}" == false ]] || \
+    fail "HEALTH_MONITORING must be either true or false."
+[[ -n "${HEALTH_DEVICE:-}" ]] || fail "HEALTH_DEVICE must be 'auto' or a device path."
+for setting in MAX_DEVICE_TEMP_C MAX_PERCENTAGE_USED; do
+    [[ "${!setting:-}" =~ ^[0-9]+$ ]] || fail "$setting must be a whole number."
+done
+(( MAX_DEVICE_TEMP_C >= 1 && MAX_DEVICE_TEMP_C <= 150 )) || \
+    fail "MAX_DEVICE_TEMP_C must be between 1 and 150."
+(( MAX_PERCENTAGE_USED >= 1 && MAX_PERCENTAGE_USED <= 100 )) || \
+    fail "MAX_PERCENTAGE_USED must be between 1 and 100."
+
+DF_OUTPUT=$("$DF_CMD" -Pk "$MOUNT_POINT") || fail "Unable to read filesystem usage for $MOUNT_POINT."
+read -r _ TOTAL_KB USED_KB AVAILABLE_KB USE_FIELD REPORTED_MOUNT <<< \
+    "$(printf '%s\n' "$DF_OUTPUT" | awk 'NR==2 {print}')"
+[[ "${USE_FIELD:-}" =~ ^([0-9]+)%$ ]] || fail "Filesystem usage is invalid: '${USE_FIELD:-}'."
+USAGE_PERCENT=${BASH_REMATCH[1]}
+(( USAGE_PERCENT <= 100 )) || fail "Filesystem usage is outside the valid range: $USAGE_PERCENT%."
+[[ "${AVAILABLE_KB:-}" =~ ^[0-9]+$ ]] || fail "Available-space reading is invalid: '${AVAILABLE_KB:-}'."
+
+echo "Mount point: $REPORTED_MOUNT"
+echo "Usage: $USAGE_PERCENT%"
+echo "Available: $AVAILABLE_KB KiB"
+
+previous_level=""
+[[ -r "$STATE_FILE" ]] && previous_level=$(<"$STATE_FILE")
+if (( USAGE_PERCENT >= CRITICAL_USAGE_PERCENT )); then
+    if [[ "$previous_level" != critical ]]; then
+        echo "Critical storage condition met."
+        if notify_user critical Critical; then
+            printf 'critical\n' > "$STATE_FILE"
+        else
+            echo "WARNING: Alert delivery failed; Storage Guard will retry."
+        fi
+    else
+        echo "Critical storage alert was already sent."
+    fi
+elif (( USAGE_PERCENT >= WARNING_USAGE_PERCENT )); then
+    if [[ "$previous_level" != warning ]]; then
+        echo "Storage warning condition met."
+        if notify_user normal Warning; then
+            printf 'warning\n' > "$STATE_FILE"
+        else
+            echo "WARNING: Alert delivery failed; Storage Guard will retry."
+        fi
+    else
+        echo "Storage warning was already sent."
+    fi
+else
+    rm -f "$STATE_FILE"
+    echo "Storage condition is safe."
+fi
+
+[[ "$HEALTH_MONITORING" == true ]] || {
+    echo "Device health monitoring is disabled."
+    exit 0
+}
+
+# Resolve the filesystem through partitions or device-mapper layers to its
+# physical disk. An explicit HEALTH_DEVICE supports RAID and unusual layouts.
+if [[ "$HEALTH_DEVICE" == auto ]]; then
+    SOURCE_DEVICE=$("$FINDMNT_CMD" -n -o SOURCE -T "$MOUNT_POINT" 2>/dev/null || true)
+    if [[ -z "$SOURCE_DEVICE" ]]; then
+        echo "Device health unavailable: unable to resolve the source for $MOUNT_POINT."
+        exit 0
+    fi
+    HEALTH_DEVICE_RESOLVED=$("$LSBLK_CMD" -s -n -p -o NAME,TYPE "$SOURCE_DEVICE" 2>/dev/null | \
+        awk '$2 == "disk" {print $1; exit}')
+else
+    HEALTH_DEVICE_RESOLVED=$HEALTH_DEVICE
+fi
+
+if [[ -z "$HEALTH_DEVICE_RESOLVED" ]]; then
+    echo "Device health unavailable: no physical disk was found for $MOUNT_POINT."
+    exit 0
+fi
+if [[ ! -x "$SMARTCTL_CMD" ]]; then
+    echo "Device health unavailable: smartctl is not installed at $SMARTCTL_CMD."
+    exit 0
+fi
+
+# smartctl uses nonzero status bits for both command errors and discovered
+# health problems, so parse any returned report rather than discarding it.
+SMART_OUTPUT=$("$SMARTCTL_CMD" -H -A "$HEALTH_DEVICE_RESOLVED" 2>&1)
+if [[ -z "$SMART_OUTPUT" ]]; then
+    echo "Device health unavailable: smartctl returned no data for $HEALTH_DEVICE_RESOLVED."
+    exit 0
+fi
+
+HEALTH_LEVEL=safe
+HEALTH_REASONS=()
+if grep -Eqi 'overall-health.*(FAILED|BAD)|SMART Health Status:.*(FAILED|BAD)' <<< "$SMART_OUTPUT"; then
+    HEALTH_LEVEL=critical
+    HEALTH_REASONS+=("SMART reports an overall health failure")
+fi
+critical_warning=$(awk -F: 'tolower($1) ~ /critical warning/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}' <<< "$SMART_OUTPUT")
+if [[ "$critical_warning" =~ ^0[xX][0-9a-fA-F]+$ ]] && (( critical_warning != 0 )); then
+    HEALTH_LEVEL=critical
+    HEALTH_REASONS+=("NVMe critical warning is $critical_warning")
+fi
+
+device_temp=$(awk '
+    /^Temperature:/ {for (i=2; i<=NF; i++) if ($i ~ /^[0-9]+$/) {print $i; exit}}
+    /Temperature_Celsius|Airflow_Temperature_Cel/ && $NF ~ /^[0-9]+$/ {print $NF; exit}
+' <<< "$SMART_OUTPUT")
+percentage_used=$(awk -F: 'tolower($1) ~ /percentage used/ {gsub(/[% \t]/, "", $2); print $2; exit}' <<< "$SMART_OUTPUT")
+media_errors=$(awk -F: 'tolower($1) ~ /media and data integrity errors/ {gsub(/[, \t]/, "", $2); print $2; exit}' <<< "$SMART_OUTPUT")
+ata_problem_count=$(awk '
+    /Reallocated_Sector_Ct|Current_Pending_Sector|Offline_Uncorrectable|Reported_Uncorrect/ && $NF ~ /^[0-9]+$/ {sum += $NF}
+    END {print sum + 0}
+' <<< "$SMART_OUTPUT")
+
+if [[ "$device_temp" =~ ^[0-9]+$ ]] && (( device_temp >= MAX_DEVICE_TEMP_C )); then
+    [[ "$HEALTH_LEVEL" == critical ]] || HEALTH_LEVEL=warning
+    HEALTH_REASONS+=("temperature is ${device_temp} C (limit ${MAX_DEVICE_TEMP_C} C)")
+fi
+if [[ "$percentage_used" =~ ^[0-9]+$ ]] && (( percentage_used >= MAX_PERCENTAGE_USED )); then
+    [[ "$HEALTH_LEVEL" == critical ]] || HEALTH_LEVEL=warning
+    HEALTH_REASONS+=("SSD life used is ${percentage_used}% (limit ${MAX_PERCENTAGE_USED}%)")
+fi
+if [[ "$media_errors" =~ ^[0-9]+$ ]] && (( media_errors > 0 )); then
+    [[ "$HEALTH_LEVEL" == critical ]] || HEALTH_LEVEL=warning
+    HEALTH_REASONS+=("NVMe media/data-integrity errors: $media_errors")
+fi
+if (( ata_problem_count > 0 )); then
+    [[ "$HEALTH_LEVEL" == critical ]] || HEALTH_LEVEL=warning
+    HEALTH_REASONS+=("ATA bad/pending/uncorrectable sector count: $ata_problem_count")
+fi
+
+echo "Health device: $HEALTH_DEVICE_RESOLVED"
+[[ "$device_temp" =~ ^[0-9]+$ ]] && echo "Device temperature: $device_temp C"
+[[ "$percentage_used" =~ ^[0-9]+$ ]] && echo "Device life used: $percentage_used%"
+
+previous_health_level=""
+[[ -r "$HEALTH_STATE_FILE" ]] && previous_health_level=$(<"$HEALTH_STATE_FILE")
+if [[ "$HEALTH_LEVEL" == safe ]]; then
+    rm -f "$HEALTH_STATE_FILE"
+    echo "Storage device health is safe."
+else
+    HEALTH_REASON=$(IFS='; '; echo "${HEALTH_REASONS[*]}")
+    echo "${HEALTH_LEVEL^} storage device health condition met: $HEALTH_REASON"
+    if [[ "$previous_health_level" == "$HEALTH_LEVEL" ]]; then
+        echo "Storage device health alert was already sent."
+    elif notify_health "$([[ "$HEALTH_LEVEL" == critical ]] && echo critical || echo normal)" \
+        "${HEALTH_LEVEL^}" "$HEALTH_REASON"; then
+        printf '%s\n' "$HEALTH_LEVEL" > "$HEALTH_STATE_FILE"
+    else
+        echo "WARNING: Health alert delivery failed; Storage Guard will retry."
+    fi
+fi

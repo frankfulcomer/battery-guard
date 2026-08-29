@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Storage Guard periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=storage-guard.service
+
+[Install]
+WantedBy=timers.target

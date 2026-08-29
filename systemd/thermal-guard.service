@@ -1,0 +1,7 @@
+[Unit]
+Description=Thermal Guard protection check
+
+[Service]
+Type=oneshot
+ExecStart=/home/frank/Projects/system-guard/src/thermal-guard
+WorkingDirectory=/home/frank/Projects/system-guard

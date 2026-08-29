@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+mkdir -p "$TEST_DIR/config" "$TEST_DIR/bin"
+cat > "$TEST_DIR/bin/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf '/dev/test 100000 %s %s %s%% /test\n' "$TEST_USED" "$TEST_AVAILABLE" "$TEST_PERCENT"
+EOF
+cat > "$TEST_DIR/bin/warn" <<EOF
+#!/usr/bin/env bash
+printf '%s %s\n' "\$1" "\$2" >> "$TEST_DIR/warnings"
+EOF
+cat > "$TEST_DIR/bin/findmnt" <<'EOF'
+#!/usr/bin/env bash
+printf '/dev/test1\n'
+EOF
+cat > "$TEST_DIR/bin/lsblk" <<'EOF'
+#!/usr/bin/env bash
+printf '/dev/test1 part\n/dev/test disk\n'
+EOF
+cat > "$TEST_DIR/bin/smartctl" <<'EOF'
+#!/usr/bin/env bash
+case "$TEST_SMART_MODE" in
+    healthy)
+        printf '%s\n' \
+            'SMART overall-health self-assessment test result: PASSED' \
+            'Temperature_Celsius 0x0022 100 100 000 Old_age Always - 35' \
+            'Reallocated_Sector_Ct 0x0033 100 100 010 Pre-fail Always - 0'
+        ;;
+    warning)
+        printf '%s\n' \
+            'SMART overall-health self-assessment test result: PASSED' \
+            'Temperature_Celsius 0x0022 100 100 000 Old_age Always - 35' \
+            'Reallocated_Sector_Ct 0x0033 100 100 010 Pre-fail Always - 2'
+        ;;
+    nvme-warning)
+        printf '%s\n' 'SMART overall-health self-assessment test result: PASSED' \
+            'Critical Warning:                   0x00' \
+            'Temperature:                        40 Celsius' \
+            'Percentage Used:                    95%' \
+            'Media and Data Integrity Errors:    0'
+        ;;
+    critical)
+        printf '%s\n' 'SMART overall-health self-assessment test result: FAILED'
+        exit 8
+        ;;
+esac
+EOF
+chmod +x "$TEST_DIR/bin/df" "$TEST_DIR/bin/warn" "$TEST_DIR/bin/findmnt" \
+    "$TEST_DIR/bin/lsblk" "$TEST_DIR/bin/smartctl"
+ln -s "$PROJECT_DIR/src/storage-guard" "$TEST_DIR/storage-guard"
+printf '%s\n' 'MOUNT_POINT=/' 'WARNING_USAGE_PERCENT=80' 'CRITICAL_USAGE_PERCENT=90' \
+    'WARNING_USER=test' 'HEALTH_MONITORING=true' 'HEALTH_DEVICE=auto' \
+    'MAX_DEVICE_TEMP_C=70' 'MAX_PERCENTAGE_USED=90' > "$TEST_DIR/config/storage-guard.conf"
+
+run_guard() {
+    local percent=$1 smart_mode=${2:-healthy}
+    (cd "$TEST_DIR" && TEST_PERCENT="$percent" TEST_USED="$((percent * 1000))" \
+        TEST_AVAILABLE="$(((100 - percent) * 1000))" TEST_SMART_MODE="$smart_mode" \
+        STORAGE_GUARD_DF_CMD="$TEST_DIR/bin/df" \
+        STORAGE_GUARD_FINDMNT_CMD="$TEST_DIR/bin/findmnt" \
+        STORAGE_GUARD_LSBLK_CMD="$TEST_DIR/bin/lsblk" \
+        STORAGE_GUARD_SMARTCTL_CMD="$TEST_DIR/bin/smartctl" \
+        STORAGE_GUARD_WARNING_CMD="$TEST_DIR/bin/warn" \
+        STORAGE_GUARD_STATE_FILE="$TEST_DIR/alert-level" ./storage-guard)
+}
+
+output=$(run_guard 70)
+grep -q 'Storage condition is safe.' <<< "$output"
+output=$(run_guard 85)
+grep -q 'Storage warning condition met.' <<< "$output"
+output=$(run_guard 86)
+grep -q 'Storage warning was already sent.' <<< "$output"
+output=$(run_guard 95)
+grep -q 'Critical storage condition met.' <<< "$output"
+output=$(run_guard 96)
+grep -q 'Critical storage alert was already sent.' <<< "$output"
+run_guard 70 >/dev/null
+run_guard 85 >/dev/null
+[[ $(wc -l < "$TEST_DIR/warnings") -eq 3 ]]
+
+output=$(STORAGE_GUARD_HEALTH_STATE_FILE="$TEST_DIR/health-level" run_guard 70 warning)
+grep -q 'Warning storage device health condition met' <<< "$output"
+output=$(STORAGE_GUARD_HEALTH_STATE_FILE="$TEST_DIR/health-level" run_guard 70 warning)
+grep -q 'Storage device health alert was already sent.' <<< "$output"
+output=$(STORAGE_GUARD_HEALTH_STATE_FILE="$TEST_DIR/health-level" run_guard 70 critical)
+grep -q 'Critical storage device health condition met' <<< "$output"
+output=$(STORAGE_GUARD_HEALTH_STATE_FILE="$TEST_DIR/health-level" run_guard 70 healthy)
+grep -q 'Storage device health is safe.' <<< "$output"
+output=$(STORAGE_GUARD_HEALTH_STATE_FILE="$TEST_DIR/health-level" run_guard 70 nvme-warning)
+grep -q 'SSD life used is 95%' <<< "$output"
+[[ $(wc -l < "$TEST_DIR/warnings") -eq 6 ]]
+
+output=$(cd "$TEST_DIR" && TEST_PERCENT=70 TEST_USED=70000 TEST_AVAILABLE=30000 \
+    STORAGE_GUARD_DF_CMD="$TEST_DIR/bin/df" STORAGE_GUARD_FINDMNT_CMD="$TEST_DIR/bin/findmnt" \
+    STORAGE_GUARD_LSBLK_CMD="$TEST_DIR/bin/lsblk" \
+    STORAGE_GUARD_SMARTCTL_CMD="$TEST_DIR/bin/missing-smartctl" \
+    STORAGE_GUARD_WARNING_CMD="$TEST_DIR/bin/warn" STORAGE_GUARD_STATE_FILE="$TEST_DIR/alert-level" \
+    ./storage-guard)
+grep -q 'Device health unavailable: smartctl is not installed' <<< "$output"
+printf 'All Storage Guard tests passed.\n'

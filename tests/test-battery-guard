@@ -75,4 +75,4 @@ output=$(run_guard discharging 25 false)
 grep -q 'Low battery warning condition met.' <<< "$output"
 [[ $(wc -l < "$TEST_DIR/warnings") -eq 2 ]]
 
-printf 'All Battery Guard tests passed.\n'
+printf 'All Low Battery Guard tests passed.\n'

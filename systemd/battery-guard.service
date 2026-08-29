@@ -1,8 +1,8 @@
 [Unit]
-Description=Battery Guard battery protection check
+Description=Low Battery Guard protection check
 After=upower.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/frank/Projects/battery-guard/src/battery-guard
-WorkingDirectory=/home/frank/Projects/battery-guard
+ExecStart=/home/frank/Projects/system-guard/src/battery-guard
+WorkingDirectory=/home/frank/Projects/system-guard

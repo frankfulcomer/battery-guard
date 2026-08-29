@@ -1,0 +1,7 @@
+[Unit]
+Description=Storage Guard capacity check
+
+[Service]
+Type=oneshot
+ExecStart=/home/frank/Projects/system-guard/src/storage-guard
+WorkingDirectory=/home/frank/Projects/system-guard

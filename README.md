@@ -1,19 +1,27 @@
-# Battery Guard
+# System Guard
 
-Battery Guard is a lightweight Linux battery-monitoring service. It reads battery telemetry from UPower and can automatically power off the computer when the battery is discharging at or below a configured threshold.
+System Guard is a set of lightweight Linux health-monitoring services:
+
+- **Low Battery Guard** reads UPower telemetry, warns before the battery is
+  exhausted, and can power off safely at a critical charge level.
+- **Thermal Guard** watches every Linux thermal zone, warns when the hottest
+  sensor is too warm, and can power off safely at a critical temperature.
+- **Storage Guard** watches a configured filesystem and sends escalating
+  capacity alerts. It never removes files automatically.
 
 ## Safety
 
-The repository defaults to dry-run mode:
+Any guard capable of powering off the computer supports a dry-run mode. Use
+this safe setting while validating a new installation:
 
 ```ini
 WARNING_THRESHOLD=20
-THRESHOLD=10
+THRESHOLD=15
 DRY_RUN=true
 WARNING_USER=frank
 ```
 
-In dry-run mode, Battery Guard reports when the shutdown condition is met but does not power off the computer. When `DRY_RUN=false`, a discharging battery at or below `THRESHOLD` causes Battery Guard to run:
+In dry-run mode, Low Battery Guard reports when the shutdown condition is met but does not power off the computer. When `DRY_RUN=false`, a discharging battery at or below `THRESHOLD` causes Low Battery Guard to run:
 
 ```text
 /usr/bin/systemctl poweroff
@@ -29,6 +37,9 @@ Test the complete dry-run workflow before enabling live mode.
 - `notify-send` for desktop notifications
 - `canberra-gtk-play` for audible alerts
 - A battery exposed by UPower as `battery_BAT1`
+- Linux thermal-zone sensors exposed below `/sys/class/thermal`
+- GNU `df` (from coreutils) for filesystem-capacity readings
+- `smartctl` from `smartmontools` for physical disk health monitoring
 
 Confirm the battery device on your system with:
 
@@ -44,19 +55,19 @@ Edit `config/battery-guard.conf`:
 
 ```ini
 WARNING_THRESHOLD=20
-THRESHOLD=10
+THRESHOLD=15
 DRY_RUN=true
 WARNING_USER=frank
 ```
 
-- `WARNING_THRESHOLD` is the percentage at which Battery Guard displays a
+- `WARNING_THRESHOLD` is the percentage at which Low Battery Guard displays a
   desktop notification and plays an alert sound while discharging.
 - `THRESHOLD` must be a whole number from 1 through 100.
 - `DRY_RUN` must be either `true` or `false`.
 - `WARNING_USER` is the signed-in desktop user who receives the notification
   and sound.
 
-`WARNING_THRESHOLD` must be higher than `THRESHOLD`. Battery Guard sends one
+`WARNING_THRESHOLD` must be higher than `THRESHOLD`. Low Battery Guard sends one
 warning during each discharge cycle rather than repeating it every minute. The
 warning resets when the battery stops discharging.
 
@@ -93,12 +104,93 @@ Run it with:
 
 ```bash
 ./tests/test-battery-guard
+./tests/test-thermal-guard
+./tests/test-storage-guard
 ```
 
 Expected result:
 
 ```text
-All Battery Guard tests passed.
+All Low Battery Guard tests passed.
+All Thermal Guard tests passed.
+All Storage Guard tests passed.
+```
+
+The thermal tests use simulated sysfs sensor readings and a harmless fake
+power-off command. The storage tests use simulated filesystem readings and
+verify safe, warning, critical, deduplication, and reset behavior.
+
+## Thermal Guard
+
+Configure `config/thermal-guard.conf`:
+
+```ini
+WARNING_TEMP_C=85
+CRITICAL_TEMP_C=95
+DRY_RUN=true
+WARNING_USER=frank
+```
+
+Temperatures are whole degrees Celsius from 1 through 150, and the critical
+threshold must be higher than the warning threshold. Thermal Guard examines all
+`thermal_zone*/temp` sensors and acts on the hottest valid reading. It sends one
+alert per warning level while the temperature remains elevated, resetting after
+temperatures fall below the warning level. At the critical level it either
+reports the dry-run action or requests a clean system power-off.
+
+Run a check manually from the repository root:
+
+```bash
+./src/thermal-guard
+```
+
+## Storage Guard
+
+Configure `config/storage-guard.conf`:
+
+```ini
+MOUNT_POINT=/
+WARNING_USAGE_PERCENT=85
+CRITICAL_USAGE_PERCENT=95
+WARNING_USER=frank
+HEALTH_MONITORING=true
+HEALTH_DEVICE=auto
+MAX_DEVICE_TEMP_C=70
+MAX_PERCENTAGE_USED=90
+```
+
+Usage thresholds are whole percentages from 1 through 100, and the critical
+threshold must be higher than the warning threshold. Storage Guard sends one
+warning at the first threshold and a new critical alert if usage rises further.
+The alert state resets after usage falls below the warning level. Automatic
+deletion is intentionally outside this guard's responsibilities.
+
+When `HEALTH_MONITORING=true`, Storage Guard resolves the physical disk behind
+`MOUNT_POINT` and reads its SMART or NVMe health report. It checks:
+
+- the drive's overall health result and NVMe critical-warning flags;
+- device temperature;
+- SSD life percentage used;
+- NVMe media and data-integrity errors; and
+- ATA reallocated, pending, reported-uncorrectable, and offline-uncorrectable
+  sector counts.
+
+`HEALTH_DEVICE=auto` works for ordinary disks, partitions, and device-mapper
+stacks. Set an explicit path such as `/dev/sda` for RAID, USB bridges, or other
+layouts that cannot be resolved automatically. Unsupported devices and missing
+SMART data are reported as unavailable without interrupting capacity checks.
+Health inspection is read-only and never starts a self-test or repair.
+
+On Ubuntu, install the health dependency with:
+
+```bash
+sudo apt install smartmontools
+```
+
+Run a check manually from the repository root:
+
+```bash
+./src/storage-guard
 ```
 
 ## Install the systemd units
@@ -106,7 +198,7 @@ All Battery Guard tests passed.
 The included unit currently expects the repository at:
 
 ```text
-/home/frank/Projects/battery-guard
+/home/frank/Projects/system-guard
 ```
 
 If the repository is elsewhere, update `ExecStart` and `WorkingDirectory` in `systemd/battery-guard.service` first.
@@ -116,7 +208,18 @@ Install the units and reload systemd:
 ```bash
 sudo install -m 0644 systemd/battery-guard.service /etc/systemd/system/battery-guard.service
 sudo install -m 0644 systemd/battery-guard.timer /etc/systemd/system/battery-guard.timer
+sudo install -m 0644 systemd/thermal-guard.service /etc/systemd/system/thermal-guard.service
+sudo install -m 0644 systemd/thermal-guard.timer /etc/systemd/system/thermal-guard.timer
+sudo install -m 0644 systemd/storage-guard.service /etc/systemd/system/storage-guard.service
+sudo install -m 0644 systemd/storage-guard.timer /etc/systemd/system/storage-guard.timer
 sudo systemctl daemon-reload
+```
+
+Each component has its own timer, so it can be tested and enabled independently:
+
+```bash
+sudo systemctl start thermal-guard.service storage-guard.service
+sudo systemctl enable --now thermal-guard.timer storage-guard.timer
 ```
 
 Test the service while `DRY_RUN=true`:
@@ -169,9 +272,9 @@ sudo systemctl enable --now battery-guard.timer
 systemctl status battery-guard.timer --no-pager
 ```
 
-With the example configuration, Battery Guard shows a pop-up and plays a sound
+With the example configuration, Low Battery Guard shows a pop-up and plays a sound
 at 20% while discharging. If discharge continues, it powers off the computer at
-10% or below.
+15% or below.
 
 ## Monitoring and troubleshooting
 
@@ -188,7 +291,7 @@ systemctl status battery-guard.timer --no-pager
 systemctl list-timers battery-guard.timer --no-pager
 ```
 
-Immediately disable Battery Guard automation:
+Immediately disable Low Battery Guard automation:
 
 ```bash
 sudo systemctl disable --now battery-guard.timer

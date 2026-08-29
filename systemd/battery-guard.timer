@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Battery Guard periodically
+Description=Run Low Battery Guard periodically
 
 [Timer]
 OnBootSec=1min

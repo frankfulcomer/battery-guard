@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+mkdir -p "$TEST_DIR/config" "$TEST_DIR/thermal/thermal_zone0" "$TEST_DIR/thermal/thermal_zone1" "$TEST_DIR/bin"
+printf 'cpu-thermal\n' > "$TEST_DIR/thermal/thermal_zone0/type"
+printf 'nvme\n' > "$TEST_DIR/thermal/thermal_zone1/type"
+cat > "$TEST_DIR/bin/warn" <<EOF
+#!/usr/bin/env bash
+printf '%s %s %s\n' "\$1" "\$2" "\$3" >> "$TEST_DIR/warnings"
+EOF
+cat > "$TEST_DIR/bin/poweroff" <<EOF
+#!/usr/bin/env bash
+touch "$TEST_DIR/powered-off"
+EOF
+chmod +x "$TEST_DIR/bin/warn" "$TEST_DIR/bin/poweroff"
+ln -s "$PROJECT_DIR/src/thermal-guard" "$TEST_DIR/thermal-guard"
+
+run_guard() {
+    local cpu=$1 nvme=$2 dry_run=$3
+    printf '%s\n' "WARNING_TEMP_C=80" "CRITICAL_TEMP_C=90" "DRY_RUN=$dry_run" "WARNING_USER=test" > "$TEST_DIR/config/thermal-guard.conf"
+    printf '%s\n' "$cpu" > "$TEST_DIR/thermal/thermal_zone0/temp"
+    printf '%s\n' "$nvme" > "$TEST_DIR/thermal/thermal_zone1/temp"
+    (cd "$TEST_DIR" && THERMAL_GUARD_SYSFS_ROOT="$TEST_DIR/thermal" \
+        THERMAL_GUARD_WARNING_CMD="$TEST_DIR/bin/warn" \
+        THERMAL_GUARD_POWEROFF_CMD="$TEST_DIR/bin/poweroff" \
+        THERMAL_GUARD_WARNING_STATE_FILE="$TEST_DIR/warning-sent" ./thermal-guard)
+}
+
+output=$(run_guard 65000 70000 false)
+grep -q 'Thermal condition is safe.' <<< "$output"
+output=$(run_guard 81000 70000 false)
+grep -q 'Thermal warning condition met.' <<< "$output"
+output=$(run_guard 82000 70000 false)
+grep -q 'Thermal warning was already sent.' <<< "$output"
+output=$(run_guard 95000 70000 true)
+grep -q 'DRY RUN: thermal shutdown suppressed.' <<< "$output"
+[[ ! -e "$TEST_DIR/powered-off" ]]
+run_guard 95000 70000 false >/dev/null
+[[ -e "$TEST_DIR/powered-off" ]]
+printf 'All Thermal Guard tests passed.\n'
