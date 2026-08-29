@@ -2,6 +2,15 @@
 
 CONFIG="./config/battery-guard.conf"
 BATTERY="/org/freedesktop/UPower/devices/battery_BAT1"
+POWEROFF_CMD="${BATTERY_GUARD_POWEROFF_CMD:-/usr/bin/systemctl}"
+
+power_off() {
+    if [[ -n "${BATTERY_GUARD_POWEROFF_CMD:-}" ]]; then
+        "$POWEROFF_CMD"
+    else
+        "$POWEROFF_CMD" poweroff
+    fi
+}
 
 source "$CONFIG"
 
@@ -53,7 +62,7 @@ if [[ "$STATE" == "discharging" && "$PERCENT" -le "$THRESHOLD" ]]; then
         echo "DRY RUN: shutdown condition met."
     else
         echo "Shutdown condition met."
-        echo "System would power off here."
+        power_off
     fi
 else
     echo "Battery condition is safe."

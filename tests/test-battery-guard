@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+mkdir -p "$TEST_DIR/config" "$TEST_DIR/bin"
+
+cat > "$TEST_DIR/bin/upower" <<'EOF'
+#!/usr/bin/env bash
+printf '  state:               %s\n' "${TEST_STATE}"
+printf '  percentage:          %s%%\n' "${TEST_PERCENT}"
+EOF
+
+cat > "$TEST_DIR/bin/fake-poweroff" <<EOF
+#!/usr/bin/env bash
+touch "$TEST_DIR/powered-off"
+EOF
+
+chmod +x "$TEST_DIR/bin/upower" "$TEST_DIR/bin/fake-poweroff"
+ln -s "$PROJECT_DIR/src/battery-guard" "$TEST_DIR/battery-guard"
+
+run_guard() {
+    local state=$1
+    local percent=$2
+    local dry_run=$3
+
+    printf 'THRESHOLD=20\nDRY_RUN=%s\n' "$dry_run" > "$TEST_DIR/config/battery-guard.conf"
+    rm -f "$TEST_DIR/powered-off"
+
+    (
+        cd "$TEST_DIR"
+        PATH="$TEST_DIR/bin:$PATH" \
+        TEST_STATE="$state" \
+        TEST_PERCENT="$percent" \
+        BATTERY_GUARD_POWEROFF_CMD="$TEST_DIR/bin/fake-poweroff" \
+        ./battery-guard
+    )
+}
+
+output=$(run_guard discharging 20 true)
+grep -q 'DRY RUN: shutdown condition met.' <<< "$output"
+[[ ! -e "$TEST_DIR/powered-off" ]]
+
+output=$(run_guard charging 10 false)
+grep -q 'Battery condition is safe.' <<< "$output"
+[[ ! -e "$TEST_DIR/powered-off" ]]
+
+output=$(run_guard discharging 20 false)
+grep -q 'Shutdown condition met.' <<< "$output"
+[[ -e "$TEST_DIR/powered-off" ]]
+
+printf 'All Battery Guard tests passed.\n'
