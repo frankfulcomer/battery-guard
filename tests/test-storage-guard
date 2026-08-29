@@ -55,7 +55,8 @@ chmod +x "$TEST_DIR/bin/df" "$TEST_DIR/bin/warn" "$TEST_DIR/bin/findmnt" \
 ln -s "$PROJECT_DIR/src/storage-guard" "$TEST_DIR/storage-guard"
 printf '%s\n' 'MOUNT_POINT=/' 'WARNING_USAGE_PERCENT=80' 'CRITICAL_USAGE_PERCENT=90' \
     'WARNING_USER=test' 'HEALTH_MONITORING=true' 'HEALTH_DEVICE=auto' \
-    'MAX_DEVICE_TEMP_C=70' 'MAX_PERCENTAGE_USED=90' > "$TEST_DIR/config/storage-guard.conf"
+    'MAX_DEVICE_TEMP_C=70' 'MAX_PERCENTAGE_USED=90' 'HISTORY_ENABLED=true' \
+    'HISTORY_RETENTION_DAYS=90' > "$TEST_DIR/config/storage-guard.conf"
 
 run_guard() {
     local percent=$1 smart_mode=${2:-healthy}
@@ -66,7 +67,8 @@ run_guard() {
         STORAGE_GUARD_LSBLK_CMD="$TEST_DIR/bin/lsblk" \
         STORAGE_GUARD_SMARTCTL_CMD="$TEST_DIR/bin/smartctl" \
         STORAGE_GUARD_WARNING_CMD="$TEST_DIR/bin/warn" \
-        STORAGE_GUARD_STATE_FILE="$TEST_DIR/alert-level" ./storage-guard)
+        STORAGE_GUARD_STATE_FILE="$TEST_DIR/alert-level" \
+        SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/history" ./storage-guard)
 }
 
 output=$(run_guard 70)
@@ -100,6 +102,7 @@ output=$(cd "$TEST_DIR" && TEST_PERCENT=70 TEST_USED=70000 TEST_AVAILABLE=30000 
     STORAGE_GUARD_LSBLK_CMD="$TEST_DIR/bin/lsblk" \
     STORAGE_GUARD_SMARTCTL_CMD="$TEST_DIR/bin/missing-smartctl" \
     STORAGE_GUARD_WARNING_CMD="$TEST_DIR/bin/warn" STORAGE_GUARD_STATE_FILE="$TEST_DIR/alert-level" \
-    ./storage-guard)
+    SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/history" ./storage-guard)
 grep -q 'Device health unavailable: smartctl is not installed' <<< "$output"
+grep -q '/,70,30000,safe,/dev/test,unavailable' "$TEST_DIR/history/storage/"*.csv
 printf 'All Storage Guard tests passed.\n'

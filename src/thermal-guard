@@ -7,6 +7,8 @@ CONFIG="./config/thermal-guard.conf"
 THERMAL_ROOT="${THERMAL_GUARD_SYSFS_ROOT:-/sys/class/thermal}"
 POWEROFF_CMD="${THERMAL_GUARD_POWEROFF_CMD:-/usr/bin/systemctl}"
 WARNING_STATE_FILE="${THERMAL_GUARD_WARNING_STATE_FILE:-/run/thermal-guard-warning-sent}"
+SCRIPT_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+source "${SYSTEM_GUARD_HISTORY_LIB:-$SCRIPT_DIR/history-lib}"
 
 fail() {
     echo "ERROR: $*"
@@ -60,6 +62,7 @@ done
 (( CRITICAL_TEMP_C > WARNING_TEMP_C )) || fail "CRITICAL_TEMP_C must be greater than WARNING_TEMP_C."
 [[ "${DRY_RUN:-}" == true || "${DRY_RUN:-}" == false ]] || fail "DRY_RUN must be either true or false."
 [[ -n "${WARNING_USER:-}" ]] || fail "WARNING_USER must name the desktop user to notify."
+history_validate_config || exit 1
 
 MAX_TEMP_MC=-1
 MAX_ZONE=""
@@ -83,6 +86,15 @@ done
 MAX_TEMP_C=$((MAX_TEMP_MC / 1000))
 printf 'Hottest zone: %s\nTemperature: %d.%03d C\n' "$MAX_ZONE" \
     "$MAX_TEMP_C" "$((MAX_TEMP_MC % 1000))"
+
+THERMAL_LEVEL=safe
+if (( MAX_TEMP_MC >= CRITICAL_TEMP_C * 1000 )); then
+    THERMAL_LEVEL=critical
+elif (( MAX_TEMP_MC >= WARNING_TEMP_C * 1000 )); then
+    THERMAL_LEVEL=warning
+fi
+history_append thermal 'zone,temperature_millic,status' \
+    "$MAX_ZONE" "$MAX_TEMP_MC" "$THERMAL_LEVEL"
 
 previous_level=""
 [[ -r "$WARNING_STATE_FILE" ]] && previous_level=$(<"$WARNING_STATE_FILE")

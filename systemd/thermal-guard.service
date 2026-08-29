@@ -5,3 +5,4 @@ Description=Thermal Guard protection check
 Type=oneshot
 ExecStart=/home/frank/Projects/system-guard/src/thermal-guard
 WorkingDirectory=/home/frank/Projects/system-guard
+StateDirectory=system-guard

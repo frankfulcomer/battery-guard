@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+
+# Summarize recent structured history without requiring a database or plotting tool.
+set -u
+
+HISTORY_ROOT="${SYSTEM_GUARD_HISTORY_DIR:-/var/lib/system-guard/history}"
+DAYS=${1:-7}
+if ! [[ "$DAYS" =~ ^[0-9]+$ ]] || (( DAYS < 1 )); then
+    echo "Usage: system-guard-report [positive-number-of-days]" >&2
+    exit 1
+fi
+
+history_files() {
+    local component=$1
+    find "$HISTORY_ROOT/$component" -maxdepth 1 -type f -name '????-??-??.csv' \
+        -mtime "-$DAYS" -print0 2>/dev/null | sort -z
+}
+
+print_battery() {
+    local files=()
+    mapfile -d '' files < <(history_files battery)
+    echo "Battery (last $DAYS days)"
+    if (( ${#files[@]} == 0 )); then
+        echo "  No history available."
+        return
+    fi
+    awk -F, '
+        FNR == 1 {next}
+        NR == 2 || $3 < min {min=$3}
+        NR == 2 || $3 > max {max=$3}
+        {count++; timestamp=$1; state=$2; percent=$3; status=$4}
+        END {
+            printf "  Samples: %d | Range: %d%%-%d%%\n", count, min, max
+            printf "  Latest: %s, %s%%, %s (%s)\n", timestamp, percent, state, status
+        }
+    ' "${files[@]}"
+}
+
+print_thermal() {
+    local files=()
+    mapfile -d '' files < <(history_files thermal)
+    echo "Thermal (last $DAYS days)"
+    if (( ${#files[@]} == 0 )); then
+        echo "  No history available."
+        return
+    fi
+    awk -F, '
+        FNR == 1 {next}
+        count == 0 || $3 < min {min=$3}
+        count == 0 || $3 > max {max=$3}
+        {count++; timestamp=$1; zone=$2; temp=$3; status=$4}
+        END {
+            printf "  Samples: %d | Range: %.1f-%.1f C\n", count, min/1000, max/1000
+            printf "  Latest: %s, %.1f C at %s (%s)\n", timestamp, temp/1000, zone, status
+        }
+    ' "${files[@]}"
+}
+
+print_storage() {
+    local files=()
+    mapfile -d '' files < <(history_files storage)
+    echo "Storage (last $DAYS days)"
+    if (( ${#files[@]} == 0 )); then
+        echo "  No history available."
+        return
+    fi
+    awk -F, '
+        FNR == 1 {next}
+        count == 0 || $3 < min {min=$3}
+        count == 0 || $3 > max {max=$3}
+        {
+            count++; timestamp=$1; mount=$2; usage=$3; available=$4
+            capacity=$5; device=$6; health=$7; temp=$8; wear=$9
+        }
+        END {
+            printf "  Samples: %d | Usage range: %d%%-%d%%\n", count, min, max
+            printf "  Latest: %s, %s%% used, %s KiB free (%s)\n", timestamp, usage, available, capacity
+            printf "  Device: %s | Health: %s", device == "" ? "unavailable" : device, health
+            if (temp != "") printf " | Temperature: %s C", temp
+            if (wear != "") printf " | Life used: %s%%", wear
+            printf "\n"
+        }
+    ' "${files[@]}"
+}
+
+echo "System Guard trend report"
+echo
+print_battery
+echo
+print_thermal
+echo
+print_storage

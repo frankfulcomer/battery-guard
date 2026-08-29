@@ -106,6 +106,7 @@ Run it with:
 ./tests/test-battery-guard
 ./tests/test-thermal-guard
 ./tests/test-storage-guard
+./tests/test-history
 ```
 
 Expected result:
@@ -114,6 +115,7 @@ Expected result:
 All Low Battery Guard tests passed.
 All Thermal Guard tests passed.
 All Storage Guard tests passed.
+All structured history tests passed.
 ```
 
 The thermal tests use simulated sysfs sensor readings and a harmless fake
@@ -192,6 +194,48 @@ Run a check manually from the repository root:
 ```bash
 ./src/storage-guard
 ```
+
+## Structured history and trends
+
+Each successful telemetry check appends one row to a daily CSV file below:
+
+```text
+/var/lib/system-guard/history/
+├── battery/YYYY-MM-DD.csv
+├── thermal/YYYY-MM-DD.csv
+└── storage/YYYY-MM-DD.csv
+```
+
+Battery history includes state, percentage, and guard status. Thermal history
+includes the hottest zone, its millidegree reading, and guard status. Storage
+history includes capacity, free space, device health, temperature, SSD wear,
+and error counts when the drive exposes them.
+
+History is enabled in each component configuration with:
+
+```ini
+HISTORY_ENABLED=true
+HISTORY_RETENTION_DAYS=90
+```
+
+Daily files older than the retention period are removed automatically. File
+locking prevents overlapping timer runs from corrupting a history file, and a
+history-write failure is logged without interrupting any protection action.
+
+Show a seven-day trend summary:
+
+```bash
+./src/system-guard-report
+```
+
+Choose a different reporting window by supplying the number of days:
+
+```bash
+./src/system-guard-report 30
+```
+
+The CSV files remain directly usable by spreadsheet software, plotting tools,
+or a future dashboard.
 
 ## Install the systemd units
 

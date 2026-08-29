@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+HISTORY_ENABLED=true
+HISTORY_RETENTION_DAYS=90
+SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/history"
+source "$PROJECT_DIR/src/history-lib"
+
+history_validate_config
+history_append battery 'state,percentage,status' discharging 45 safe
+history_append battery 'state,percentage,status' discharging 35 safe
+history_append thermal 'zone,temperature_millic,status' cpu 50000 safe
+history_append thermal 'zone,temperature_millic,status' cpu 65000 safe
+history_append storage \
+    'mount,usage_percent,available_kib,capacity_status,device,health_status,temperature_c,life_used_percent,media_errors,ata_problem_sectors' \
+    / 18 95000000 safe /dev/sdb safe 34 12 0 0
+
+output=$(SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/history" "$PROJECT_DIR/src/system-guard-report" 7)
+grep -q 'Range: 35%-45%' <<< "$output"
+grep -q 'Range: 50.0-65.0 C' <<< "$output"
+grep -q 'Usage range: 18%-18%' <<< "$output"
+grep -q 'Health: safe' <<< "$output"
+
+printf 'All structured history tests passed.\n'

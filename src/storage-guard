@@ -10,6 +10,8 @@ HEALTH_STATE_FILE="${STORAGE_GUARD_HEALTH_STATE_FILE:-/run/storage-guard-health-
 FINDMNT_CMD="${STORAGE_GUARD_FINDMNT_CMD:-/usr/bin/findmnt}"
 LSBLK_CMD="${STORAGE_GUARD_LSBLK_CMD:-/usr/bin/lsblk}"
 SMARTCTL_CMD="${STORAGE_GUARD_SMARTCTL_CMD:-/usr/sbin/smartctl}"
+SCRIPT_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+source "${SYSTEM_GUARD_HISTORY_LIB:-$SCRIPT_DIR/history-lib}"
 
 fail() {
     echo "ERROR: $*"
@@ -72,6 +74,7 @@ done
     fail "MAX_DEVICE_TEMP_C must be between 1 and 150."
 (( MAX_PERCENTAGE_USED >= 1 && MAX_PERCENTAGE_USED <= 100 )) || \
     fail "MAX_PERCENTAGE_USED must be between 1 and 100."
+history_validate_config || exit 1
 
 DF_OUTPUT=$("$DF_CMD" -Pk "$MOUNT_POINT") || fail "Unable to read filesystem usage for $MOUNT_POINT."
 read -r _ TOTAL_KB USED_KB AVAILABLE_KB USE_FIELD REPORTED_MOUNT <<< \
@@ -84,6 +87,26 @@ USAGE_PERCENT=${BASH_REMATCH[1]}
 echo "Mount point: $REPORTED_MOUNT"
 echo "Usage: $USAGE_PERCENT%"
 echo "Available: $AVAILABLE_KB KiB"
+
+CAPACITY_LEVEL=safe
+(( USAGE_PERCENT >= CRITICAL_USAGE_PERCENT )) && CAPACITY_LEVEL=critical
+if [[ "$CAPACITY_LEVEL" == safe ]] && (( USAGE_PERCENT >= WARNING_USAGE_PERCENT )); then
+    CAPACITY_LEVEL=warning
+fi
+
+HEALTH_DEVICE_RESOLVED=""
+device_temp=""
+percentage_used=""
+media_errors=""
+ata_problem_count=""
+record_storage_history() {
+    local health_status=$1
+    history_append storage \
+        'mount,usage_percent,available_kib,capacity_status,device,health_status,temperature_c,life_used_percent,media_errors,ata_problem_sectors' \
+        "$MOUNT_POINT" "$USAGE_PERCENT" "$AVAILABLE_KB" "$CAPACITY_LEVEL" \
+        "$HEALTH_DEVICE_RESOLVED" "$health_status" "$device_temp" \
+        "$percentage_used" "$media_errors" "$ata_problem_count"
+}
 
 previous_level=""
 [[ -r "$STATE_FILE" ]] && previous_level=$(<"$STATE_FILE")
@@ -116,6 +139,7 @@ fi
 
 [[ "$HEALTH_MONITORING" == true ]] || {
     echo "Device health monitoring is disabled."
+    record_storage_history disabled
     exit 0
 }
 
@@ -125,6 +149,7 @@ if [[ "$HEALTH_DEVICE" == auto ]]; then
     SOURCE_DEVICE=$("$FINDMNT_CMD" -n -o SOURCE -T "$MOUNT_POINT" 2>/dev/null || true)
     if [[ -z "$SOURCE_DEVICE" ]]; then
         echo "Device health unavailable: unable to resolve the source for $MOUNT_POINT."
+        record_storage_history unavailable
         exit 0
     fi
     HEALTH_DEVICE_RESOLVED=$("$LSBLK_CMD" -s -n -p -o NAME,TYPE "$SOURCE_DEVICE" 2>/dev/null | \
@@ -135,10 +160,12 @@ fi
 
 if [[ -z "$HEALTH_DEVICE_RESOLVED" ]]; then
     echo "Device health unavailable: no physical disk was found for $MOUNT_POINT."
+    record_storage_history unavailable
     exit 0
 fi
 if [[ ! -x "$SMARTCTL_CMD" ]]; then
     echo "Device health unavailable: smartctl is not installed at $SMARTCTL_CMD."
+    record_storage_history unavailable
     exit 0
 fi
 
@@ -147,6 +174,7 @@ fi
 SMART_OUTPUT=$("$SMARTCTL_CMD" -H -A "$HEALTH_DEVICE_RESOLVED" 2>&1)
 if [[ -z "$SMART_OUTPUT" ]]; then
     echo "Device health unavailable: smartctl returned no data for $HEALTH_DEVICE_RESOLVED."
+    record_storage_history unavailable
     exit 0
 fi
 
@@ -211,3 +239,4 @@ else
         echo "WARNING: Health alert delivery failed; Storage Guard will retry."
     fi
 fi
+record_storage_history "$HEALTH_LEVEL"

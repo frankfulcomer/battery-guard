@@ -24,6 +24,8 @@ POWEROFF_CMD="${BATTERY_GUARD_POWEROFF_CMD:-/usr/bin/systemctl}"
 # This small marker file remembers that a warning has already been delivered
 # during the current discharge cycle. Tests replace it with a temporary path.
 WARNING_STATE_FILE="${BATTERY_GUARD_WARNING_STATE_FILE:-/run/battery-guard-warning-sent}"
+SCRIPT_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+source "${SYSTEM_GUARD_HISTORY_LIB:-$SCRIPT_DIR/history-lib}"
 
 power_off() {
     # During an automated test, run only the supplied fake command. It accepts
@@ -135,6 +137,8 @@ if [[ -z "$WARNING_USER" ]]; then
     exit 1
 fi
 
+history_validate_config || exit 1
+
 # Ask UPower for the complete information record for the selected battery. The
 # record includes many fields; Low Battery Guard extracts only state and percentage.
 INFO=$(upower -i "$BATTERY")
@@ -177,6 +181,14 @@ fi
 # are saved in the journal and provide a simple operating history.
 echo "State: $STATE"
 echo "Percentage: $PERCENT%"
+
+BATTERY_LEVEL=safe
+if [[ "$STATE" == discharging ]] && (( PERCENT <= THRESHOLD )); then
+    BATTERY_LEVEL=critical
+elif [[ "$STATE" == discharging ]] && (( PERCENT <= WARNING_THRESHOLD )); then
+    BATTERY_LEVEL=warning
+fi
+history_append battery 'state,percentage,status' "$STATE" "$PERCENT" "$BATTERY_LEVEL"
 
 # Both conditions must be true before shutdown is considered:
 #   1. The battery must actually be discharging.

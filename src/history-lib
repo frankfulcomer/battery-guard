@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+
+# Shared, best-effort CSV history support. A logging problem must never prevent
+# a guard from performing its primary safety check.
+
+history_validate_config() {
+    if [[ "${HISTORY_ENABLED:-}" != true && "${HISTORY_ENABLED:-}" != false ]]; then
+        echo "ERROR: HISTORY_ENABLED must be either true or false."
+        return 1
+    fi
+    if ! [[ "${HISTORY_RETENTION_DAYS:-}" =~ ^[0-9]+$ ]] || (( HISTORY_RETENTION_DAYS < 1 )); then
+        echo "ERROR: HISTORY_RETENTION_DAYS must be a positive whole number."
+        return 1
+    fi
+}
+
+history_clean_field() {
+    local value=${1//$'\n'/ }
+    value=${value//$'\r'/ }
+    value=${value//,/;}
+    printf '%s' "$value"
+}
+
+history_append() {
+    [[ "${HISTORY_ENABLED:-false}" == true ]] || return 0
+
+    local component=$1 header=$2
+    shift 2
+    local root=${SYSTEM_GUARD_HISTORY_DIR:-/var/lib/system-guard/history}
+    local component_dir="$root/$component"
+    local history_file="$component_dir/$(date -u +%F).csv"
+    local lock_file="$component_dir/.lock"
+
+    if ! mkdir -p "$component_dir"; then
+        echo "WARNING: Unable to create history directory $component_dir."
+        return 0
+    fi
+
+    local lock_fd
+    if ! exec {lock_fd}>>"$lock_file"; then
+        echo "WARNING: Unable to open the $component history lock."
+        return 0
+    fi
+    if command -v flock >/dev/null && ! flock -x "$lock_fd"; then
+        echo "WARNING: Unable to lock $history_file."
+        exec {lock_fd}>&-
+        return 0
+    fi
+
+    [[ -s "$history_file" ]] || printf 'timestamp_utc,%s\n' "$header" >> "$history_file"
+    printf '%s' "$(date -u +%FT%TZ)" >> "$history_file"
+    local field
+    for field in "$@"; do
+        printf ',%s' "$(history_clean_field "$field")" >> "$history_file"
+    done
+    printf '\n' >> "$history_file"
+    exec {lock_fd}>&-
+
+    # Daily files make retention safe and cheap. Limit deletion to this
+    # component's dated CSV files.
+    find "$component_dir" -maxdepth 1 -type f -name '????-??-??.csv' \
+        -mtime "+$HISTORY_RETENTION_DAYS" -delete 2>/dev/null || \
+        echo "WARNING: Unable to prune old $component history."
+}

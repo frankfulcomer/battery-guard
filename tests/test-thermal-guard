@@ -20,13 +20,15 @@ ln -s "$PROJECT_DIR/src/thermal-guard" "$TEST_DIR/thermal-guard"
 
 run_guard() {
     local cpu=$1 nvme=$2 dry_run=$3
-    printf '%s\n' "WARNING_TEMP_C=80" "CRITICAL_TEMP_C=90" "DRY_RUN=$dry_run" "WARNING_USER=test" > "$TEST_DIR/config/thermal-guard.conf"
+    printf '%s\n' "WARNING_TEMP_C=80" "CRITICAL_TEMP_C=90" "DRY_RUN=$dry_run" \
+        "WARNING_USER=test" "HISTORY_ENABLED=true" "HISTORY_RETENTION_DAYS=90" > "$TEST_DIR/config/thermal-guard.conf"
     printf '%s\n' "$cpu" > "$TEST_DIR/thermal/thermal_zone0/temp"
     printf '%s\n' "$nvme" > "$TEST_DIR/thermal/thermal_zone1/temp"
     (cd "$TEST_DIR" && THERMAL_GUARD_SYSFS_ROOT="$TEST_DIR/thermal" \
         THERMAL_GUARD_WARNING_CMD="$TEST_DIR/bin/warn" \
         THERMAL_GUARD_POWEROFF_CMD="$TEST_DIR/bin/poweroff" \
-        THERMAL_GUARD_WARNING_STATE_FILE="$TEST_DIR/warning-sent" ./thermal-guard)
+        THERMAL_GUARD_WARNING_STATE_FILE="$TEST_DIR/warning-sent" \
+        SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/history" ./thermal-guard)
 }
 
 output=$(run_guard 65000 70000 false)
@@ -40,4 +42,5 @@ grep -q 'DRY RUN: thermal shutdown suppressed.' <<< "$output"
 [[ ! -e "$TEST_DIR/powered-off" ]]
 run_guard 95000 70000 false >/dev/null
 [[ -e "$TEST_DIR/powered-off" ]]
+grep -q 'cpu-thermal,95000,critical' "$TEST_DIR/history/thermal/"*.csv
 printf 'All Thermal Guard tests passed.\n'
