@@ -8,7 +8,7 @@ The repository defaults to dry-run mode:
 
 ```ini
 WARNING_THRESHOLD=20
-THRESHOLD=12
+THRESHOLD=10
 DRY_RUN=true
 WARNING_USER=frank
 ```
@@ -44,7 +44,7 @@ Edit `config/battery-guard.conf`:
 
 ```ini
 WARNING_THRESHOLD=20
-THRESHOLD=12
+THRESHOLD=10
 DRY_RUN=true
 WARNING_USER=frank
 ```
@@ -171,7 +171,7 @@ systemctl status battery-guard.timer --no-pager
 
 With the example configuration, Battery Guard shows a pop-up and plays a sound
 at 20% while discharging. If discharge continues, it powers off the computer at
-12% or below.
+10% or below.
 
 ## Monitoring and troubleshooting
 
