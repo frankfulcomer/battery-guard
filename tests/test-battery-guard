@@ -19,7 +19,12 @@ cat > "$TEST_DIR/bin/fake-poweroff" <<EOF
 touch "$TEST_DIR/powered-off"
 EOF
 
-chmod +x "$TEST_DIR/bin/upower" "$TEST_DIR/bin/fake-poweroff"
+cat > "$TEST_DIR/bin/fake-warning" <<EOF
+#!/usr/bin/env bash
+printf 'warning at %s%% (threshold %s%%)\n' "\$1" "\$2" >> "$TEST_DIR/warnings"
+EOF
+
+chmod +x "$TEST_DIR/bin/upower" "$TEST_DIR/bin/fake-poweroff" "$TEST_DIR/bin/fake-warning"
 ln -s "$PROJECT_DIR/src/battery-guard" "$TEST_DIR/battery-guard"
 
 run_guard() {
@@ -27,7 +32,8 @@ run_guard() {
     local percent=$2
     local dry_run=$3
 
-    printf 'THRESHOLD=20\nDRY_RUN=%s\n' "$dry_run" > "$TEST_DIR/config/battery-guard.conf"
+    printf 'WARNING_THRESHOLD=30\nTHRESHOLD=20\nDRY_RUN=%s\nWARNING_USER=test-user\n' \
+        "$dry_run" > "$TEST_DIR/config/battery-guard.conf"
     rm -f "$TEST_DIR/powered-off"
 
     (
@@ -36,9 +42,13 @@ run_guard() {
         TEST_STATE="$state" \
         TEST_PERCENT="$percent" \
         BATTERY_GUARD_POWEROFF_CMD="$TEST_DIR/bin/fake-poweroff" \
+        BATTERY_GUARD_WARNING_CMD="$TEST_DIR/bin/fake-warning" \
+        BATTERY_GUARD_WARNING_STATE_FILE="$TEST_DIR/warning-sent" \
         ./battery-guard
     )
 }
+
+rm -f "$TEST_DIR/warnings" "$TEST_DIR/warning-sent"
 
 output=$(run_guard discharging 20 true)
 grep -q 'DRY RUN: shutdown condition met.' <<< "$output"
@@ -51,5 +61,18 @@ grep -q 'Battery condition is safe.' <<< "$output"
 output=$(run_guard discharging 20 false)
 grep -q 'Shutdown condition met.' <<< "$output"
 [[ -e "$TEST_DIR/powered-off" ]]
+
+output=$(run_guard discharging 25 false)
+grep -q 'Low battery warning condition met.' <<< "$output"
+[[ $(wc -l < "$TEST_DIR/warnings") -eq 1 ]]
+
+output=$(run_guard discharging 24 false)
+grep -q 'Low battery warning was already sent' <<< "$output"
+[[ $(wc -l < "$TEST_DIR/warnings") -eq 1 ]]
+
+run_guard charging 24 false >/dev/null
+output=$(run_guard discharging 25 false)
+grep -q 'Low battery warning condition met.' <<< "$output"
+[[ $(wc -l < "$TEST_DIR/warnings") -eq 2 ]]
 
 printf 'All Battery Guard tests passed.\n'

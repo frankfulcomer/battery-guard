@@ -7,8 +7,10 @@ Battery Guard is a lightweight Linux battery-monitoring service. It reads batter
 The repository defaults to dry-run mode:
 
 ```ini
-THRESHOLD=20
+WARNING_THRESHOLD=20
+THRESHOLD=12
 DRY_RUN=true
+WARNING_USER=frank
 ```
 
 In dry-run mode, Battery Guard reports when the shutdown condition is met but does not power off the computer. When `DRY_RUN=false`, a discharging battery at or below `THRESHOLD` causes Battery Guard to run:
@@ -24,6 +26,8 @@ Test the complete dry-run workflow before enabling live mode.
 - Linux with systemd
 - UPower and the `upower` command
 - Bash
+- `notify-send` for desktop notifications
+- `canberra-gtk-play` for audible alerts
 - A battery exposed by UPower as `battery_BAT1`
 
 Confirm the battery device on your system with:
@@ -39,12 +43,22 @@ If the battery uses a different device name, update `BATTERY` near the top of `s
 Edit `config/battery-guard.conf`:
 
 ```ini
-THRESHOLD=20
+WARNING_THRESHOLD=20
+THRESHOLD=12
 DRY_RUN=true
+WARNING_USER=frank
 ```
 
+- `WARNING_THRESHOLD` is the percentage at which Battery Guard displays a
+  desktop notification and plays an alert sound while discharging.
 - `THRESHOLD` must be a whole number from 1 through 100.
 - `DRY_RUN` must be either `true` or `false`.
+- `WARNING_USER` is the signed-in desktop user who receives the notification
+  and sound.
+
+`WARNING_THRESHOLD` must be higher than `THRESHOLD`. Battery Guard sends one
+warning during each discharge cycle rather than repeating it every minute. The
+warning resets when the battery stops discharging.
 
 Keep `DRY_RUN=true` until the script and systemd service have been tested successfully on the target computer.
 
@@ -70,7 +84,10 @@ The test suite supplies simulated UPower readings and a harmless replacement for
 
 - dry-run mode never invokes power-off;
 - a safe battery condition never invokes power-off; and
-- the live low-battery branch invokes the simulated command.
+- the live low-battery branch invokes the simulated command;
+- the visual and audible warning path runs at the configured warning level;
+- a warning is sent only once during a discharge cycle; and
+- charging resets the warning for the next discharge cycle.
 
 Run it with:
 
@@ -151,6 +168,10 @@ If the result is correct, enable live periodic protection:
 sudo systemctl enable --now battery-guard.timer
 systemctl status battery-guard.timer --no-pager
 ```
+
+With the example configuration, Battery Guard shows a pop-up and plays a sound
+at 20% while discharging. If discharge continues, it powers off the computer at
+12% or below.
 
 ## Monitoring and troubleshooting
 

@@ -21,6 +21,10 @@ BATTERY="/org/freedesktop/UPower/devices/battery_BAT1"
 # variable, so normal live operation always uses /usr/bin/systemctl.
 POWEROFF_CMD="${BATTERY_GUARD_POWEROFF_CMD:-/usr/bin/systemctl}"
 
+# This small marker file remembers that a warning has already been delivered
+# during the current discharge cycle. Tests replace it with a temporary path.
+WARNING_STATE_FILE="${BATTERY_GUARD_WARNING_STATE_FILE:-/run/battery-guard-warning-sent}"
+
 power_off() {
     # During an automated test, run only the supplied fake command. It accepts
     # no arguments and merely records that Battery Guard reached this point.
@@ -32,6 +36,52 @@ power_off() {
         # DRY_RUN has explicitly been set to false.
         "$POWEROFF_CMD" poweroff
     fi
+}
+
+send_warning() {
+    # Tests supply a harmless replacement that records the warning instead of
+    # contacting the desktop session or playing a real sound.
+    if [[ -n "${BATTERY_GUARD_WARNING_CMD:-}" ]]; then
+        "$BATTERY_GUARD_WARNING_CMD" "$PERCENT" "$WARNING_THRESHOLD"
+        return
+    fi
+
+    # Battery Guard runs as a system service, but desktop notifications and
+    # sounds belong to the signed-in user's session. Look up that user's numeric
+    # ID and provide the session paths required to reach the desktop safely.
+    local warning_uid
+    warning_uid=$(/usr/bin/id -u "$WARNING_USER")
+    local runtime_dir="/run/user/$warning_uid"
+    local session_bus="unix:path=$runtime_dir/bus"
+    local delivered=false
+
+    # A notification failure must never prevent the battery check or shutdown
+    # protection from continuing, so failures are reported to the journal only.
+    if ! /usr/sbin/runuser -u "$WARNING_USER" -- \
+        env XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$session_bus" \
+        /usr/bin/notify-send --urgency=critical --app-name="Battery Guard" \
+        "Low battery warning" \
+        "Battery is at $PERCENT%. Automatic shutdown is set for $THRESHOLD%."; then
+        echo "WARNING: Unable to display the desktop notification."
+    else
+        delivered=true
+    fi
+
+    # Play Ubuntu's standard warning sound in the same user session. As with the
+    # pop-up, a sound failure is logged but does not stop Battery Guard.
+    if ! /usr/sbin/runuser -u "$WARNING_USER" -- \
+        env XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$session_bus" \
+        /usr/bin/canberra-gtk-play --id=dialog-warning \
+        --description="Battery Guard low battery warning"; then
+        echo "WARNING: Unable to play the audible alert."
+    else
+        delivered=true
+    fi
+
+    # If neither alert reached the user (for example, nobody was logged in yet),
+    # return a failure so the next timer run can try again instead of permanently
+    # recording a warning that the user never received.
+    [[ "$delivered" == "true" ]]
 }
 
 # Load THRESHOLD and DRY_RUN from the configuration file into this script.
@@ -57,6 +107,31 @@ fi
 # being interpreted as live mode or otherwise producing ambiguous behavior.
 if [[ "$DRY_RUN" != "true" && "$DRY_RUN" != "false" ]]; then
     echo "ERROR: DRY_RUN must be either true or false."
+    exit 1
+fi
+
+# The warning level follows the same percentage rules as the shutdown level.
+if ! [[ "$WARNING_THRESHOLD" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: WARNING_THRESHOLD must be a whole number."
+    exit 1
+fi
+
+if (( WARNING_THRESHOLD < 1 || WARNING_THRESHOLD > 100 )); then
+    echo "ERROR: WARNING_THRESHOLD must be between 1 and 100."
+    exit 1
+fi
+
+# Requiring the warning level to be higher guarantees that the user receives a
+# useful warning before Battery Guard reaches the shutdown level.
+if (( WARNING_THRESHOLD <= THRESHOLD )); then
+    echo "ERROR: WARNING_THRESHOLD must be greater than THRESHOLD."
+    exit 1
+fi
+
+# The system service needs to know which signed-in desktop user should receive
+# the pop-up and sound. Reject an empty value instead of guessing.
+if [[ -z "$WARNING_USER" ]]; then
+    echo "ERROR: WARNING_USER must name the desktop user to notify."
     exit 1
 fi
 
@@ -108,6 +183,12 @@ echo "Percentage: $PERCENT%"
 #   2. Its percentage must be at or below the configured threshold.
 # A low percentage while charging, fully charged, or pending charge is safe and
 # deliberately does not trigger a shutdown.
+if [[ "$STATE" != "discharging" ]]; then
+    # Charging begins a new cycle. Remove the marker so a future discharge can
+    # produce a fresh warning when it reaches the warning level.
+    rm -f "$WARNING_STATE_FILE"
+fi
+
 if [[ "$STATE" == "discharging" && "$PERCENT" -le "$THRESHOLD" ]]; then
     # Dry-run mode follows the full decision path but stops before the power-off
     # function. This makes it safe to validate configuration and telemetry.
@@ -118,6 +199,19 @@ if [[ "$STATE" == "discharging" && "$PERCENT" -le "$THRESHOLD" ]]; then
         # ask systemd to power off the computer cleanly.
         echo "Shutdown condition met."
         power_off
+    fi
+elif [[ "$STATE" == "discharging" && "$PERCENT" -le "$WARNING_THRESHOLD" ]]; then
+    # Warn only once during a discharge cycle. The timer checks every minute,
+    # so without this marker the pop-up and sound would repeat continuously.
+    if [[ ! -e "$WARNING_STATE_FILE" ]]; then
+        echo "Low battery warning condition met."
+        if send_warning; then
+            touch "$WARNING_STATE_FILE"
+        else
+            echo "WARNING: Alert delivery failed; Battery Guard will retry."
+        fi
+    else
+        echo "Low battery warning was already sent for this discharge cycle."
     fi
 else
     # This message covers every case in which no protective action is required.
