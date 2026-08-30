@@ -106,7 +106,9 @@ Run it with:
 ./tests/test-battery-guard
 ./tests/test-thermal-guard
 ./tests/test-storage-guard
+./tests/test-uptime-guard
 ./tests/test-history
+./tests/test-email-report
 ```
 
 Expected result:
@@ -115,7 +117,9 @@ Expected result:
 All Low Battery Guard tests passed.
 All Thermal Guard tests passed.
 All Storage Guard tests passed.
+All Uptime Guard tests passed.
 All structured history tests passed.
+All weekly email report tests passed.
 ```
 
 The thermal tests use simulated sysfs sensor readings and a harmless fake
@@ -203,13 +207,20 @@ Each successful telemetry check appends one row to a daily CSV file below:
 /var/lib/system-guard/history/
 ├── battery/YYYY-MM-DD.csv
 ├── thermal/YYYY-MM-DD.csv
-└── storage/YYYY-MM-DD.csv
+├── storage/YYYY-MM-DD.csv
+└── uptime/YYYY-MM-DD.csv
 ```
 
 Battery history includes state, percentage, and guard status. Thermal history
 includes the hottest zone, its millidegree reading, and guard status. Storage
 history includes capacity, free space, device health, temperature, SSD wear,
 and error counts when the drive exposes them.
+
+Uptime Guard samples the kernel's monotonic uptime and boot ID every five
+minutes. The trend report uses those samples to show observed online time,
+estimated offline time, availability, reboot transitions, and current uptime.
+Because shutdown can occur between samples, each reboot boundary has up to
+approximately five minutes of uncertainty.
 
 History is enabled in each component configuration with:
 
@@ -317,14 +328,16 @@ sudo install -m 0644 systemd/thermal-guard.service /etc/systemd/system/thermal-g
 sudo install -m 0644 systemd/thermal-guard.timer /etc/systemd/system/thermal-guard.timer
 sudo install -m 0644 systemd/storage-guard.service /etc/systemd/system/storage-guard.service
 sudo install -m 0644 systemd/storage-guard.timer /etc/systemd/system/storage-guard.timer
+sudo install -m 0644 systemd/uptime-guard.service /etc/systemd/system/uptime-guard.service
+sudo install -m 0644 systemd/uptime-guard.timer /etc/systemd/system/uptime-guard.timer
 sudo systemctl daemon-reload
 ```
 
 Each component has its own timer, so it can be tested and enabled independently:
 
 ```bash
-sudo systemctl start thermal-guard.service storage-guard.service
-sudo systemctl enable --now thermal-guard.timer storage-guard.timer
+sudo systemctl start thermal-guard.service storage-guard.service uptime-guard.service
+sudo systemctl enable --now thermal-guard.timer storage-guard.timer uptime-guard.timer
 ```
 
 Test the service while `DRY_RUN=true`:

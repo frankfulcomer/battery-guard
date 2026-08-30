@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+mkdir -p "$TEST_DIR/config" "$TEST_DIR/proc/sys/kernel/random"
+printf '%s\n' 'HISTORY_ENABLED=true' 'HISTORY_RETENTION_DAYS=90' > \
+    "$TEST_DIR/config/uptime-guard.conf"
+printf '11111111-2222-3333-4444-555555555555\n' > \
+    "$TEST_DIR/proc/sys/kernel/random/boot_id"
+printf '3661.42 9000.00\n' > "$TEST_DIR/proc/uptime"
+ln -s "$PROJECT_DIR/src/uptime-guard" "$TEST_DIR/uptime-guard"
+
+output=$(cd "$TEST_DIR" && SYSTEM_GUARD_PROC_ROOT="$TEST_DIR/proc" \
+    SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/history" ./uptime-guard)
+grep -q 'Uptime: 3661 seconds' <<< "$output"
+grep -Eq ',[0-9]+,11111111-2222-3333-4444-555555555555,3661$' \
+    "$TEST_DIR/history/uptime/"*.csv
+
+printf 'All Uptime Guard tests passed.\n'

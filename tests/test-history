@@ -18,11 +18,36 @@ history_append thermal 'zone,temperature_millic,status' cpu 65000 safe
 history_append storage \
     'mount,usage_percent,available_kib,capacity_status,device,health_status,temperature_c,life_used_percent,media_errors,ata_problem_sectors' \
     / 18 95000000 safe /dev/sdb safe 34 12 0 0
+history_append uptime 'epoch_seconds,boot_id,uptime_seconds' \
+    "$(date -u -d '10 minutes ago' +%s)" boot-one 1000
+history_append uptime 'epoch_seconds,boot_id,uptime_seconds' \
+    "$(date -u -d '5 minutes ago' +%s)" boot-one 1300
 
-output=$(SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/history" "$PROJECT_DIR/src/system-guard-report" 7)
+mkdir -p "$TEST_DIR/proc/sys/kernel/random"
+printf 'boot-one\n' > "$TEST_DIR/proc/sys/kernel/random/boot_id"
+printf '1600.00 0.00\n' > "$TEST_DIR/proc/uptime"
+
+output=$(SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/history" \
+    SYSTEM_GUARD_PROC_ROOT="$TEST_DIR/proc" "$PROJECT_DIR/src/system-guard-report" 7)
 grep -q 'Range: 35%-45%' <<< "$output"
 grep -q 'Range: 50.0-65.0 C' <<< "$output"
 grep -q 'Usage range: 18%-18%' <<< "$output"
 grep -q 'Health: safe' <<< "$output"
+grep -q 'Availability: 100.0%' <<< "$output"
+grep -q 'Reboots observed: 0' <<< "$output"
+
+SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/reboot-history"
+history_append uptime 'epoch_seconds,boot_id,uptime_seconds' \
+    "$(date -u -d '15 minutes ago' +%s)" boot-one 1000
+history_append uptime 'epoch_seconds,boot_id,uptime_seconds' \
+    "$(date -u -d '10 minutes ago' +%s)" boot-two 120
+history_append uptime 'epoch_seconds,boot_id,uptime_seconds' \
+    "$(date -u -d '5 minutes ago' +%s)" boot-two 420
+printf 'boot-two\n' > "$TEST_DIR/proc/sys/kernel/random/boot_id"
+printf '720.00 0.00\n' > "$TEST_DIR/proc/uptime"
+output=$(SYSTEM_GUARD_HISTORY_DIR="$TEST_DIR/reboot-history" \
+    SYSTEM_GUARD_PROC_ROOT="$TEST_DIR/proc" "$PROJECT_DIR/src/system-guard-report" 7)
+grep -q 'Reboots observed: 1' <<< "$output"
+grep -q 'Availability: 80.0%' <<< "$output"
 
 printf 'All structured history tests passed.\n'

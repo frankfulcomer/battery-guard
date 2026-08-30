@@ -1,0 +1,8 @@
+[Unit]
+Description=System Guard uptime history sample
+
+[Service]
+Type=oneshot
+ExecStart=/home/frank/Projects/system-guard/src/uptime-guard
+WorkingDirectory=/home/frank/Projects/system-guard
+StateDirectory=system-guard

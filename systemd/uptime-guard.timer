@@ -1,0 +1,10 @@
+[Unit]
+Description=Record System Guard uptime every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=uptime-guard.service
+
+[Install]
+WantedBy=timers.target

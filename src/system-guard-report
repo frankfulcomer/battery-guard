@@ -83,6 +83,67 @@ print_storage() {
     ' "${files[@]}"
 }
 
+print_uptime() {
+    local files=()
+    mapfile -d '' files < <(history_files uptime)
+    echo "System uptime (last $DAYS days)"
+    if (( ${#files[@]} == 0 )); then
+        echo "  No history available."
+        return
+    fi
+
+    local now_epoch current_boot current_uptime_raw current_uptime
+    now_epoch=$(date -u +%s)
+    current_boot=$(<"${SYSTEM_GUARD_PROC_ROOT:-/proc}/sys/kernel/random/boot_id")
+    read -r current_uptime_raw _ < "${SYSTEM_GUARD_PROC_ROOT:-/proc}/uptime"
+    current_uptime=${current_uptime_raw%%.*}
+
+    awk -F, -v now="$now_epoch" -v live_boot="$current_boot" -v live_uptime="$current_uptime" '
+        function duration(seconds, days, hours, minutes, result) {
+            if (seconds < 0) seconds = 0
+            days = int(seconds / 86400); seconds %= 86400
+            hours = int(seconds / 3600); seconds %= 3600
+            minutes = int(seconds / 60)
+            result = ""
+            if (days) result = result days "d "
+            if (hours || days) result = result hours "h "
+            return result minutes "m"
+        }
+        FNR == 1 {next}
+        count == 0 {
+            first_epoch=$2; previous_epoch=$2; previous_boot=$3; previous_uptime=$4
+            count=1; next
+        }
+        {
+            wall_delta=$2-previous_epoch
+            if ($3 == previous_boot && $4 >= previous_uptime) {
+                online += $4-previous_uptime
+            } else if ($3 != previous_boot) {
+                contribution=$4
+                if (contribution > wall_delta) contribution=wall_delta
+                online += contribution
+                reboots++
+            }
+            previous_epoch=$2; previous_boot=$3; previous_uptime=$4; count++
+        }
+        END {
+            if (live_boot == previous_boot && live_uptime >= previous_uptime) {
+                online += live_uptime-previous_uptime
+                end_epoch=now
+            } else {
+                end_epoch=previous_epoch
+            }
+            observed=end_epoch-first_epoch
+            if (online > observed) online=observed
+            offline=observed-online
+            availability=observed > 0 ? online*100/observed : 100
+            printf "  Observed: %s | Samples: %d\n", duration(observed), count
+            printf "  Online: %s | Offline: %s | Availability: %.1f%%\n", duration(online), duration(offline), availability
+            printf "  Reboots observed: %d | Current uptime: %s\n", reboots, duration(live_uptime)
+        }
+    ' "${files[@]}"
+}
+
 echo "System Guard trend report"
 echo
 print_battery
@@ -90,3 +151,5 @@ echo
 print_thermal
 echo
 print_storage
+echo
+print_uptime
