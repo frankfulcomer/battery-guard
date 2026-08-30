@@ -1,0 +1,8 @@
+[Unit]
+Description=Send the System Guard weekly trend report
+
+[Service]
+Type=oneshot
+ExecStart=/home/frank/Projects/system-guard/src/system-guard-email-report
+WorkingDirectory=/home/frank/Projects/system-guard
+StateDirectory=system-guard

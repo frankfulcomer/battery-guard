@@ -152,7 +152,7 @@ if [[ "$HEALTH_DEVICE" == auto ]]; then
         record_storage_history unavailable
         exit 0
     fi
-    HEALTH_DEVICE_RESOLVED=$("$LSBLK_CMD" -s -n -p -o NAME,TYPE "$SOURCE_DEVICE" 2>/dev/null | \
+    HEALTH_DEVICE_RESOLVED=$("$LSBLK_CMD" -s -r -n -p -o NAME,TYPE "$SOURCE_DEVICE" 2>/dev/null | \
         awk '$2 == "disk" {print $1; exit}')
 else
     HEALTH_DEVICE_RESOLVED=$HEALTH_DEVICE
@@ -172,8 +172,14 @@ fi
 # smartctl uses nonzero status bits for both command errors and discovered
 # health problems, so parse any returned report rather than discarding it.
 SMART_OUTPUT=$("$SMARTCTL_CMD" -H -A "$HEALTH_DEVICE_RESOLVED" 2>&1)
+SMART_STATUS=$?
 if [[ -z "$SMART_OUTPUT" ]]; then
     echo "Device health unavailable: smartctl returned no data for $HEALTH_DEVICE_RESOLVED."
+    record_storage_history unavailable
+    exit 0
+fi
+if (( SMART_STATUS & 7 )); then
+    echo "Device health unavailable: smartctl could not inspect $HEALTH_DEVICE_RESOLVED."
     record_storage_history unavailable
     exit 0
 fi

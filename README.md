@@ -237,6 +237,67 @@ Choose a different reporting window by supplying the number of days:
 The CSV files remain directly usable by spreadsheet software, plotting tools,
 or a future dashboard.
 
+## Weekly email reports
+
+System Guard can email the trend summary once per week through Gmail. The
+hourly timer checks the configured local weekday and hour, while a state marker
+ensures that only one message is sent in each ISO week.
+
+Install the mail client:
+
+```bash
+sudo apt install msmtp msmtp-mta
+```
+
+Copy the configuration templates outside the repository:
+
+```bash
+sudo install -d -m 0755 /etc/system-guard
+sudo install -m 0644 config/email-report.conf.example /etc/system-guard/email-report.conf
+sudo install -m 0600 config/msmtprc.example /etc/msmtprc
+```
+
+Edit `/etc/system-guard/email-report.conf` to set the recipient, sender,
+weekday, local hour, reporting window, subject, and msmtp account. For Sunday
+at 9 AM with a seven-day report, use:
+
+```ini
+EMAIL_ENABLED=true
+EMAIL_TO=YOUR_GMAIL_ADDRESS
+EMAIL_FROM=YOUR_GMAIL_ADDRESS
+REPORT_DAY=Sunday
+REPORT_HOUR=9
+REPORT_DAYS=7
+EMAIL_SUBJECT="System Guard weekly report"
+SMTP_ACCOUNT=gmail
+```
+
+Edit `/etc/msmtprc` with the same Gmail address and a Gmail App Password. Keep
+this file at mode `0600`; it contains a credential and must never be committed.
+
+Install and start the email units:
+
+```bash
+sudo install -m 0644 systemd/system-guard-email-report.service /etc/systemd/system/
+sudo install -m 0644 systemd/system-guard-email-report.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now system-guard-email-report.timer
+```
+
+Send a safe immediate test without waiting for Sunday by temporarily invoking
+the service script with its force switch:
+
+```bash
+cd /home/frank/Projects/system-guard
+sudo SYSTEM_GUARD_REPORT_FORCE=true ./src/system-guard-email-report
+```
+
+View delivery logs with:
+
+```bash
+sudo journalctl -u system-guard-email-report.service -n 50 --no-pager
+```
+
 ## Install the systemd units
 
 The included unit currently expects the repository at:

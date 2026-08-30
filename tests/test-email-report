@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+mkdir -p "$TEST_DIR/bin"
+
+cat > "$TEST_DIR/email.conf" <<'EOF'
+EMAIL_ENABLED=true
+EMAIL_TO=recipient@example.com
+EMAIL_FROM=sender@example.com
+REPORT_DAY=Sunday
+REPORT_HOUR=9
+REPORT_DAYS=7
+EMAIL_SUBJECT="System Guard weekly report"
+SMTP_ACCOUNT=gmail
+EOF
+cat > "$TEST_DIR/bin/date" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+    +%A) printf '%s\n' "${TEST_DAY}" ;;
+    +%H) printf '%s\n' "${TEST_HOUR}" ;;
+    +%G-W%V) printf '%s\n' "${TEST_WEEK}" ;;
+esac
+EOF
+cat > "$TEST_DIR/bin/report" <<'EOF'
+#!/usr/bin/env bash
+printf 'System Guard trend report\nBattery: safe\nStorage: safe\n'
+EOF
+cat > "$TEST_DIR/bin/msmtp" <<EOF
+#!/usr/bin/env bash
+cat >> "$TEST_DIR/messages"
+printf '%s\n' "\$*" >> "$TEST_DIR/mail-arguments"
+EOF
+chmod +x "$TEST_DIR/bin/date" "$TEST_DIR/bin/report" "$TEST_DIR/bin/msmtp"
+
+run_report() {
+    TEST_DAY=$1 TEST_HOUR=$2 TEST_WEEK=$3 \
+    SYSTEM_GUARD_EMAIL_CONFIG="$TEST_DIR/email.conf" \
+    SYSTEM_GUARD_DATE_CMD="$TEST_DIR/bin/date" \
+    SYSTEM_GUARD_REPORT_CMD="$TEST_DIR/bin/report" \
+    SYSTEM_GUARD_MAIL_CMD="$TEST_DIR/bin/msmtp" \
+    SYSTEM_GUARD_EMAIL_STATE_FILE="$TEST_DIR/last-sent" \
+    "$PROJECT_DIR/src/system-guard-email-report"
+}
+
+output=$(run_report Saturday 09 2026-W35)
+grep -q 'Weekly report is not due' <<< "$output"
+[[ ! -e "$TEST_DIR/messages" ]]
+
+output=$(run_report Sunday 09 2026-W35)
+grep -q 'Weekly System Guard report sent' <<< "$output"
+grep -q 'To: recipient@example.com' "$TEST_DIR/messages"
+grep -q 'System Guard trend report' "$TEST_DIR/messages"
+grep -q -- '--account=gmail recipient@example.com' "$TEST_DIR/mail-arguments"
+
+output=$(run_report Sunday 09 2026-W35)
+grep -q 'already sent for 2026-W35' <<< "$output"
+[[ $(wc -l < "$TEST_DIR/mail-arguments") -eq 1 ]]
+
+output=$(run_report Sunday 09 2026-W36)
+grep -q 'sent to recipient@example.com for 2026-W36' <<< "$output"
+[[ $(wc -l < "$TEST_DIR/mail-arguments") -eq 2 ]]
+
+printf 'All weekly email report tests passed.\n'

@@ -48,6 +48,10 @@ case "$TEST_SMART_MODE" in
         printf '%s\n' 'SMART overall-health self-assessment test result: FAILED'
         exit 8
         ;;
+    unavailable)
+        printf '%s\n' 'Smartctl open device: /dev/test failed: Permission denied'
+        exit 2
+        ;;
 esac
 EOF
 chmod +x "$TEST_DIR/bin/df" "$TEST_DIR/bin/warn" "$TEST_DIR/bin/findmnt" \
@@ -96,6 +100,9 @@ grep -q 'Storage device health is safe.' <<< "$output"
 output=$(STORAGE_GUARD_HEALTH_STATE_FILE="$TEST_DIR/health-level" run_guard 70 nvme-warning)
 grep -q 'SSD life used is 95%' <<< "$output"
 [[ $(wc -l < "$TEST_DIR/warnings") -eq 6 ]]
+
+output=$(STORAGE_GUARD_HEALTH_STATE_FILE="$TEST_DIR/health-level" run_guard 70 unavailable)
+grep -q 'Device health unavailable: smartctl could not inspect /dev/test' <<< "$output"
 
 output=$(cd "$TEST_DIR" && TEST_PERCENT=70 TEST_USED=70000 TEST_AVAILABLE=30000 \
     STORAGE_GUARD_DF_CMD="$TEST_DIR/bin/df" STORAGE_GUARD_FINDMNT_CMD="$TEST_DIR/bin/findmnt" \

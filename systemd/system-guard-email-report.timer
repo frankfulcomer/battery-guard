@@ -1,0 +1,11 @@
+[Unit]
+Description=Check whether the System Guard weekly email report is due
+
+[Timer]
+OnBootSec=5min
+OnCalendar=hourly
+Persistent=true
+Unit=system-guard-email-report.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+# Copy this file to /etc/system-guard/email-report.conf and customize it.
+EMAIL_ENABLED=true
+EMAIL_TO=YOUR_GMAIL_ADDRESS
+EMAIL_FROM=YOUR_GMAIL_ADDRESS
+REPORT_DAY=Sunday
+REPORT_HOUR=9
+REPORT_DAYS=7
+EMAIL_SUBJECT="System Guard weekly report"
+SMTP_ACCOUNT=gmail

@@ -1,0 +1,16 @@
+# Install this file as /etc/msmtprc with mode 0600. Replace the placeholders
+# locally; never commit a Gmail App Password to this repository.
+defaults
+auth on
+tls on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+syslog LOG_MAIL
+
+account gmail
+host smtp.gmail.com
+port 587
+from YOUR_GMAIL_ADDRESS
+user YOUR_GMAIL_ADDRESS
+password YOUR_GMAIL_APP_PASSWORD
+
+account default : gmail
